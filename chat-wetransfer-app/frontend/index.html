@@ -1,346 +1,418 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Chat WeTransfer App</title>
+<html class="scroll-smooth" lang="en">
+ <head>
+  <meta charset="utf-8"/>
+  <meta content="width=device-width, initial-scale=1" name="viewport"/>
+  <title>
+   Decentralized Calendar &amp; Chat App
+  </title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <link href="https://fonts.googleapis.com/css2?family=Inter&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" />
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&amp;display=swap" rel="stylesheet"/>
   <style>
-    body {
+   body {
       font-family: 'Inter', sans-serif;
     }
   </style>
-</head>
-<body class="bg-gray-100 flex flex-col h-screen">
-  <div class="max-w-md mx-auto bg-white shadow-md rounded-lg flex flex-col flex-grow">
-    <header class="p-4 border-b border-gray-300 flex justify-between items-center">
-      <h1 class="text-xl font-semibold text-gray-800">Chat WeTransfer</h1>
-      <button id="generateCodeBtn" class="bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700 transition">
-        Generate Code
-      </button>
-    </header>
-    <main class="flex flex-col flex-grow p-4 overflow-auto" id="chatContainer">
-      <div id="messages" class="flex flex-col space-y-2"></div>
-    </main>
-    <footer class="p-4 border-t border-gray-300 flex items-center space-x-2">
-      <input
-        id="messageInput"
-        type="text"
-        placeholder="Type your message..."
-        class="flex-grow border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-        disabled
-      />
-      <button
-        id="sendBtn"
-        class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition disabled:opacity-50"
-        disabled
-      >
-        Send
-      </button>
-    </footer>
-    <div id="codeDisplay" class="p-4 border-t border-gray-300 text-center text-gray-700 break-words"></div>
-  </div>
-
-  <script src="/socket.io/socket.io.js"></script>
-  <script>
-    // Utility functions for cryptography
-    async function generateECDSAKeyPair() {
-      return await window.crypto.subtle.generateKey(
-        {
-          name: "ECDSA",
-          namedCurve: "P-256",
-        },
-        true,
-        ["sign", "verify"]
-      );
-    }
-
-    async function exportPublicKey(key) {
-      const spki = await window.crypto.subtle.exportKey("spki", key);
-      return arrayBufferToHex(spki);
-    }
-
-    async function signMessage(privateKey, message) {
-      const encoder = new TextEncoder();
-      const data = encoder.encode(message);
-      const signature = await window.crypto.subtle.sign(
-        {
-          name: "ECDSA",
-          hash: { name: "SHA-256" },
-        },
-        privateKey,
-        data
-      );
-      return arrayBufferToHex(signature);
-    }
-
-    async function verifySignature(publicKey, signatureHex, message) {
-      const signature = hexToArrayBuffer(signatureHex);
-      const encoder = new TextEncoder();
-      const data = encoder.encode(message);
-      return await window.crypto.subtle.verify(
-        {
-          name: "ECDSA",
-          hash: { name: "SHA-256" },
-        },
-        publicKey,
-        signature,
-        data
-      );
-    }
-
-    function arrayBufferToHex(buffer) {
-      return [...new Uint8Array(buffer)]
-        .map(b => b.toString(16).padStart(2, "0"))
-        .join("");
-    }
-
-    function hexToArrayBuffer(hex) {
-      const bytes = new Uint8Array(hex.length / 2);
-      for (let i = 0; i < bytes.length; i++) {
-        bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
-      }
-      return bytes.buffer;
-    }
-
-    async function importPublicKey(spkiHex) {
-      const spki = hexToArrayBuffer(spkiHex);
-      return await window.crypto.subtle.importKey(
-        "spki",
-        spki,
-        {
-          name: "ECDSA",
-          namedCurve: "P-256",
-        },
-        true,
-        ["verify"]
-      );
-    }
-
-    async function deriveAESKey(networkCode) {
-      const encoder = new TextEncoder();
-      const keyMaterial = await window.crypto.subtle.importKey(
-        "raw",
-        encoder.encode(networkCode),
-        "PBKDF2",
-        false,
-        ["deriveKey"]
-      );
-      return await window.crypto.subtle.deriveKey(
-        {
-          name: "PBKDF2",
-          salt: encoder.encode("chat-wetransfer-salt"),
-          iterations: 100000,
-          hash: "SHA-256",
-        },
-        keyMaterial,
-        { name: "AES-GCM", length: 256 },
-        false,
-        ["encrypt", "decrypt"]
-      );
-    }
-
-    async function encryptMessage(aesKey, message) {
-      const encoder = new TextEncoder();
-      const iv = window.crypto.getRandomValues(new Uint8Array(12));
-      const encoded = encoder.encode(message);
-      const ciphertext = await window.crypto.subtle.encrypt(
-        {
-          name: "AES-GCM",
-          iv: iv,
-        },
-        aesKey,
-        encoded
-      );
-      const combined = new Uint8Array(iv.byteLength + ciphertext.byteLength);
-      combined.set(iv, 0);
-      combined.set(new Uint8Array(ciphertext), iv.byteLength);
-      return arrayBufferToHex(combined.buffer);
-    }
-
-    async function decryptMessage(aesKey, dataHex) {
-      const data = hexToArrayBuffer(dataHex);
-      const iv = data.slice(0, 12);
-      const ciphertext = data.slice(12);
-      const decrypted = await window.crypto.subtle.decrypt(
-        {
-          name: "AES-GCM",
-          iv: iv,
-        },
-        aesKey,
-        ciphertext
-      );
-      const decoder = new TextDecoder();
-      return decoder.decode(decrypted);
-    }
-
-    // Blockchain-like message history with proof of work
-    class MessageBlock {
-      constructor(index, previousHash, messages, nonce = 0) {
-        this.index = index;
-        this.previousHash = previousHash;
-        this.messages = messages;
-        this.nonce = nonce;
-        this.timestamp = Date.now();
-        this.hash = "";
-      }
-
-      async calculateHash() {
-        const data = JSON.stringify({
-          index: this.index,
-          previousHash: this.previousHash,
-          messages: this.messages,
-          nonce: this.nonce,
-          timestamp: this.timestamp,
-        });
-        const encoder = new TextEncoder();
-        const dataBuffer = encoder.encode(data);
-        const hashBuffer = await crypto.subtle.digest("SHA-256", dataBuffer);
-        this.hash = arrayBufferToHex(hashBuffer);
-        return this.hash;
-      }
-
-      async mine(difficulty) {
-        const target = "0".repeat(difficulty);
-        while (true) {
-          await this.calculateHash();
-          if (this.hash.startsWith(target)) {
-            break;
-          }
-          this.nonce++;
-        }
-      }
-    }
-
-    class Blockchain {
-      constructor(difficulty = 2) {
-        this.chain = [];
-        this.difficulty = difficulty;
-        this.createGenesisBlock();
-      }
-
-      async createGenesisBlock() {
-        const genesisBlock = new MessageBlock(0, "0", []);
-        await genesisBlock.mine(this.difficulty);
-        this.chain.push(genesisBlock);
-      }
-
-      getLatestBlock() {
-        return this.chain[this.chain.length - 1];
-      }
-
-      async addBlock(messages) {
-        const previousHash = this.getLatestBlock().hash;
-        const newBlock = new MessageBlock(this.chain.length, previousHash, messages);
-        await newBlock.mine(this.difficulty);
-        this.chain.push(newBlock);
-      }
-
-      isChainValid() {
-        for (let i = 1; i < this.chain.length; i++) {
-          const currentBlock = this.chain[i];
-          const previousBlock = this.chain[i - 1];
-          if (currentBlock.hash !== currentBlock.calculateHash()) {
-            return false;
-          }
-          if (currentBlock.previousHash !== previousBlock.hash) {
-            return false;
-          }
-        }
-        return true;
-      }
-    }
-
-    const socket = io();
-
-    let currentCode = null;
-    let aesKey = null;
-    let ecdsaKeyPair = null;
-    let publicKeyHex = null;
-    let blockchain = new Blockchain();
-
-    const generateCodeBtn = document.getElementById('generateCodeBtn');
-    const sendBtn = document.getElementById('sendBtn');
-    const messageInput = document.getElementById('messageInput');
-    const messages = document.getElementById('messages');
-    const codeDisplay = document.getElementById('codeDisplay');
-
-    function addMessage(text, isOwn = false) {
-      const msgDiv = document.createElement('div');
-      msgDiv.className = isOwn
-        ? 'self-end bg-blue-600 text-white px-3 py-2 rounded-lg max-w-xs break-words'
-        : 'self-start bg-gray-300 text-gray-800 px-3 py-2 rounded-lg max-w-xs break-words';
-      msgDiv.textContent = text;
-      messages.appendChild(msgDiv);
-      messages.scrollTop = messages.scrollHeight;
-    }
-
-    async function initializeKeysAndJoinRoom(code) {
-      aesKey = await deriveAESKey(code);
-      ecdsaKeyPair = await generateECDSAKeyPair();
-      publicKeyHex = await exportPublicKey(ecdsaKeyPair.publicKey);
-      socket.emit('joinRoom', code);
-      codeDisplay.textContent = 'Share this code to chat: ' + code;
-      messageInput.disabled = false;
-      sendBtn.disabled = false;
-      generateCodeBtn.disabled = true;
-      addMessage('System: You joined the chat room ' + code);
-    }
-
-    generateCodeBtn.addEventListener('click', async () => {
-      const res = await fetch('/generate-code');
-      const data = await res.json();
-      currentCode = data.code;
-      await initializeKeysAndJoinRoom(currentCode);
-    });
-
-    sendBtn.addEventListener('click', async () => {
-      const msg = messageInput.value.trim();
-      if (!msg) return;
-      const encryptedMessage = await encryptMessage(aesKey, msg);
-      const signature = await signMessage(ecdsaKeyPair.privateKey, encryptedMessage);
-      const messagePayload = {
-        encryptedMessage,
-        signature,
-        publicKey: publicKeyHex,
-        timestamp: Date.now(),
-      };
-      socket.emit('chatMessage', { code: currentCode, encryptedMessage: messagePayload });
-      addMessage(msg, true);
-      messageInput.value = '';
-      messageInput.focus();
-      // Add message to blockchain
-      await blockchain.addBlock([messagePayload]);
-    });
-
-    messageInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        sendBtn.click();
-      }
-    });
-
-    socket.on('chatMessage', async ({ encryptedMessage, sender }) => {
-      if (sender !== socket.id) {
-        try {
-          // Verify signature
-          const publicKey = await importPublicKey(encryptedMessage.publicKey);
-          const valid = await verifySignature(publicKey, encryptedMessage.signature, encryptedMessage.encryptedMessage);
-          if (!valid) {
-            addMessage('Warning: Invalid signature detected.');
-            return;
-          }
-          // Decrypt message
-          const decrypted = await decryptMessage(aesKey, encryptedMessage.encryptedMessage);
-          addMessage(decrypted);
-          // Add message to blockchain
-          await blockchain.addBlock([encryptedMessage]);
-        } catch (e) {
-          addMessage('Error decrypting or verifying message.');
-        }
-      }
-    });
-  </script>
-</body>
-</html>
+ </head>
+ <body class="bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 min-h-screen flex flex-col">
+  <div class="flex-1 flex flex-col" id="app">
+   <!-- Header -->
+   <header class="flex items-center justify-between px-4 py-3 border-b border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 sticky top-0 z-20">
+    <h1 class="text-xl font-semibold select-none">
+     Decentralized Calendar
+    </h1>
+    <button aria-label="Toggle Light/Dark Mode" class="text-gray-600 dark:text-gray-300 focus:outline-none focus:ring-2 focus:ring-indigo-500 rounded" id="toggleThemeBtn">
+     <i class="fas fa-moon dark:hidden"></i>
+     <i class="fas fa-sun hidden dark:inline"></i>
+    </button>
+   </header>
+   <!-- Main content -->
+   <main class="flex-1 overflow-auto">
+    <!-- Views container -->
+    <section class="h-full flex flex-col" id="viewsContainer">
+     <!-- Calendar View -->
+     <section class="flex flex-col h-full p-4 space-y-4" id="homeView">
+      <div class="flex justify-between items-center">
+       <h2 class="text-lg font-semibold">Calendar</h2>
+       <div class="flex space-x-2">
+        <button class="calendar-view-btn px-3 py-1 rounded-md border border-indigo-600 text-indigo-600 font-medium hover:bg-indigo-50 dark:hover:bg-indigo-700 dark:text-indigo-400 dark:border-indigo-400" data-view="day">Day</button>
+        <button class="calendar-view-btn px-3 py-1 rounded-md border border-indigo-600 text-indigo-600 font-medium hover:bg-indigo-50 dark:hover:bg-indigo-700 dark:text-indigo-400 dark:border-indigo-400" data-view="week">Week</button>
+        <button class="calendar-view-btn px-3 py-1 rounded-md border border-indigo-600 text-indigo-600 font-medium hover:bg-indigo-50 dark:hover:bg-indigo-700 dark:text-indigo-400 dark:border-indigo-400" data-view="month">Month</button>
+       </div>
+      </div>
+      <div class="flex-1 overflow-auto rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 p-4" id="calendarContent">
+       <div class="hidden h-full flex flex-col" id="dayView">
+        <div class="text-center font-semibold mb-2">Monday, June 10, 2024</div>
+        <div class="flex flex-col space-y-2 overflow-auto flex-1">
+         <div class="border border-indigo-400 rounded p-2 bg-indigo-50 dark:bg-indigo-900">
+          <div class="font-semibold">09:00 - 10:00</div>
+          <div>Team Standup Meeting</div>
+          <div class="text-sm text-gray-600 dark:text-gray-400">Private</div>
+         </div>
+         <div class="border border-green-400 rounded p-2 bg-green-50 dark:bg-green-900">
+          <div class="font-semibold">14:00 - 15:30</div>
+          <div>Project Planning with #devgroup</div>
+          <div class="text-sm text-gray-600 dark:text-gray-400">Shared with Group</div>
+         </div>
+         <div class="border border-yellow-400 rounded p-2 bg-yellow-50 dark:bg-yellow-900">
+          <div class="font-semibold">18:00 - 19:00</div>
+          <div>Dinner with family</div>
+          <div class="text-sm text-gray-600 dark:text-gray-400">Private</div>
+         </div>
+        </div>
+       </div>
+       <div class="hidden h-full flex flex-col" id="weekView">
+        <div class="text-center font-semibold mb-2">Week of June 9 - June 15, 2024</div>
+        <div class="grid grid-cols-7 gap-2 flex-1 overflow-auto">
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-2 bg-white dark:bg-gray-800 flex flex-col">
+          <div class="font-semibold text-center">Sun 9</div>
+          <div class="mt-1 flex-1 space-y-1">
+           <div class="text-xs border border-indigo-400 rounded p-1 bg-indigo-50 dark:bg-indigo-900">10:00 Meeting with Alice</div>
+          </div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-2 bg-white dark:bg-gray-800 flex flex-col">
+          <div class="font-semibold text-center">Mon 10</div>
+          <div class="mt-1 flex-1 space-y-1">
+           <div class="text-xs border border-indigo-400 rounded p-1 bg-indigo-50 dark:bg-indigo-900">09:00 Team Standup</div>
+           <div class="text-xs border border-green-400 rounded p-1 bg-green-50 dark:bg-green-900">14:00 Project Planning #devgroup</div>
+           <div class="text-xs border border-yellow-400 rounded p-1 bg-yellow-50 dark:bg-yellow-900">18:00 Dinner</div>
+          </div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-2 bg-white dark:bg-gray-800 flex flex-col">
+          <div class="font-semibold text-center">Tue 11</div>
+          <div class="mt-1 flex-1 space-y-1">
+           <div class="text-xs border border-indigo-400 rounded p-1 bg-indigo-50 dark:bg-indigo-900">11:00 Doctor Appointment</div>
+          </div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-2 bg-white dark:bg-gray-800 flex flex-col">
+          <div class="font-semibold text-center">Wed 12</div>
+          <div class="mt-1 flex-1 space-y-1"></div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-2 bg-white dark:bg-gray-800 flex flex-col">
+          <div class="font-semibold text-center">Thu 13</div>
+          <div class="mt-1 flex-1 space-y-1">
+           <div class="text-xs border border-red-400 rounded p-1 bg-red-50 dark:bg-red-900">16:00 Deadline for report</div>
+          </div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-2 bg-white dark:bg-gray-800 flex flex-col">
+          <div class="font-semibold text-center">Fri 14</div>
+          <div class="mt-1 flex-1 space-y-1"></div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-2 bg-white dark:bg-gray-800 flex flex-col">
+          <div class="font-semibold text-center">Sat 15</div>
+          <div class="mt-1 flex-1 space-y-1"></div>
+         </div>
+        </div>
+       </div>
+       <div class="hidden h-full flex flex-col" id="monthView">
+        <div class="text-center font-semibold mb-2">June 2024</div>
+        <div class="grid grid-cols-7 gap-1 flex-1 overflow-auto text-xs">
+         <div class="font-semibold text-center">Sun</div>
+         <div class="font-semibold text-center">Mon</div>
+         <div class="font-semibold text-center">Tue</div>
+         <div class="font-semibold text-center">Wed</div>
+         <div class="font-semibold text-center">Thu</div>
+         <div class="font-semibold text-center">Fri</div>
+         <div class="font-semibold text-center">Sat</div>
+         <div></div><div></div><div></div><div></div><div></div><div></div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-indigo-50 dark:bg-indigo-900 relative cursor-pointer">
+          <div class="font-semibold">1</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-white dark:bg-gray-800 relative cursor-pointer">
+          <div class="font-semibold">2</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-white dark:bg-gray-800 relative cursor-pointer">
+          <div class="font-semibold">3</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-white dark:bg-gray-800 relative cursor-pointer">
+          <div class="font-semibold">4</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-white dark:bg-gray-800 relative cursor-pointer">
+          <div class="font-semibold">5</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-white dark:bg-gray-800 relative cursor-pointer">
+          <div class="font-semibold">6</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-white dark:bg-gray-800 relative cursor-pointer">
+          <div class="font-semibold">7</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-indigo-50 dark:bg-indigo-900 relative cursor-pointer">
+          <div class="font-semibold">8</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-indigo-50 dark:bg-indigo-900 relative cursor-pointer">
+          <div class="font-semibold">9</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-indigo-50 dark:bg-indigo-900 relative cursor-pointer">
+          <div class="font-semibold">10</div>
+          <div class="text-[8px] text-indigo-700 dark:text-indigo-300">Team Standup</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-green-50 dark:bg-green-900 relative cursor-pointer">
+          <div class="font-semibold">11</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-white dark:bg-gray-800 relative cursor-pointer">
+          <div class="font-semibold">12</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-red-50 dark:bg-red-900 relative cursor-pointer">
+          <div class="font-semibold">13</div>
+          <div class="text-[8px] text-red-700 dark:text-red-300">Report Deadline</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-white dark:bg-gray-800 relative cursor-pointer">
+          <div class="font-semibold">14</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-white dark:bg-gray-800 relative cursor-pointer">
+          <div class="font-semibold">15</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-white dark:bg-gray-800 relative cursor-pointer">
+          <div class="font-semibold">16</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-white dark:bg-gray-800 relative cursor-pointer">
+          <div class="font-semibold">17</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-white dark:bg-gray-800 relative cursor-pointer">
+          <div class="font-semibold">18</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-white dark:bg-gray-800 relative cursor-pointer">
+          <div class="font-semibold">19</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-white dark:bg-gray-800 relative cursor-pointer">
+          <div class="font-semibold">20</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-white dark:bg-gray-800 relative cursor-pointer">
+          <div class="font-semibold">21</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-white dark:bg-gray-800 relative cursor-pointer">
+          <div class="font-semibold">22</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-white dark:bg-gray-800 relative cursor-pointer">
+          <div class="font-semibold">23</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-white dark:bg-gray-800 relative cursor-pointer">
+          <div class="font-semibold">24</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-white dark:bg-gray-800 relative cursor-pointer">
+          <div class="font-semibold">25</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-white dark:bg-gray-800 relative cursor-pointer">
+          <div class="font-semibold">26</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-white dark:bg-gray-800 relative cursor-pointer">
+          <div class="font-semibold">27</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-white dark:bg-gray-800 relative cursor-pointer">
+          <div class="font-semibold">28</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-white dark:bg-gray-800 relative cursor-pointer">
+          <div class="font-semibold">29</div>
+         </div>
+         <div class="border border-gray-300 dark:border-gray-700 rounded p-1 bg-white dark:bg-gray-800 relative cursor-pointer">
+          <div class="font-semibold">30</div>
+         </div>
+        </div>
+       </div>
+      </div>
+     </section>
+     <!-- Chats View -->
+     <section class="hidden h-full flex flex-col p-4 space-y-4" id="chatsView">
+      <div class="flex justify-between items-center">
+       <h2 class="text-lg font-semibold">Chats</h2>
+       <button class="flex items-center space-x-2 px-3 py-1 rounded-md bg-indigo-600 text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500" id="newConnectionBtn">
+        <i class="fas fa-plus"></i>
+        <span>New Connection</span>
+       </button>
+      </div>
+      <div class="flex flex-col md:flex-row md:space-x-4 h-full">
+       <!-- Connections List -->
+       <div class="md:w-1/3 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 flex flex-col">
+        <div class="p-2 border-b border-gray-300 dark:border-gray-700 font-semibold">Connections</div>
+        <ul class="flex-1 overflow-auto divide-y divide-gray-200 dark:divide-gray-700" id="connectionsList">
+         <li class="flex items-center p-2 cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-900" data-connection-id="1">
+          <img alt="Avatar of Alice, a young woman with short brown hair and glasses" class="w-10 h-10 rounded-full object-cover" height="40" src="https://storage.googleapis.com/a1aa/image/e945a530-68b2-4781-c4b9-626904ef78f6.jpg" width="40"/>
+          <div class="ml-3 flex-1">
+           <div class="flex justify-between items-center">
+            <span class="font-semibold">Alice</span>
+            <span class="text-xs text-gray-500 dark:text-gray-400">Online</span>
+           </div>
+           <div class="text-xs text-gray-600 dark:text-gray-400">Last seen: now</div>
+          </div>
+         </li>
+         <li class="flex items-center p-2 cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-900" data-connection-id="2">
+          <img alt="Avatar of Bob, a middle-aged man with beard and glasses" class="w-10 h-10 rounded-full object-cover" height="40" src="https://storage.googleapis.com/a1aa/image/4d78e3da-6f5d-49b7-368c-9c96023058e3.jpg" width="40"/>
+          <div class="ml-3 flex-1">
+           <div class="flex justify-between items-center">
+            <span class="font-semibold">Bob</span>
+            <span class="text-xs text-gray-500 dark:text-gray-400">Offline</span>
+           </div>
+           <div class="text-xs text-gray-600 dark:text-gray-400">Last seen: 2 hours ago</div>
+          </div>
+         </li>
+         <li class="flex items-center p-2 cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-900" data-connection-id="3">
+          <img alt="Avatar of Charlie, a young man with short black hair and a friendly smile" class="w-10 h-10 rounded-full object-cover" height="40" src="https://storage.googleapis.com/a1aa/image/b42bfa16-4dda-49ba-a9c6-559827d4a5f5.jpg" width="40"/>
+          <div class="ml-3 flex-1">
+           <div class="flex justify-between items-center">
+            <span class="font-semibold">Charlie</span>
+            <span class="text-xs text-gray-500 dark:text-gray-400">Online</span>
+           </div>
+           <div class="text-xs text-gray-600 dark:text-gray-400">Last seen: 5 minutes ago</div>
+          </div>
+         </li>
+         <li class="flex items-center p-2 cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-900" data-connection-id="4">
+          <img alt="Avatar of Denise, a woman with long blonde hair and a warm smile" class="w-10 h-10 rounded-full object-cover" height="40" src="https://storage.googleapis.com/a1aa/image/4312ece6-2e71-480d-22e5-2fd6dd6c9ad0.jpg" width="40"/>
+          <div class="ml-3 flex-1">
+           <div class="flex justify-between items-center">
+            <span class="font-semibold">Denise</span>
+            <span class="text-xs text-gray-500 dark:text-gray-400">Offline</span>
+           </div>
+           <div class="text-xs text-gray-600 dark:text-gray-400">Last seen: yesterday</div>
+          </div>
+         </li>
+         <li class="flex items-center p-2 cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-900" data-connection-id="5">
+          <img alt="Avatar of Emily, a young woman with curly hair and bright eyes" class="w-10 h-10 rounded-full object-cover" height="40" src="https://storage.googleapis.com/a1aa/image/74c69880-fc99-408b-9efb-bb11de434875.jpg" width="40"/>
+          <div class="ml-3 flex-1">
+           <div class="flex justify-between items-center">
+            <span class="font-semibold">Emily</span>
+            <span class="text-xs text-gray-500 dark:text-gray-400">Online</span>
+           </div>
+           <div class="text-xs text-gray-600 dark:text-gray-400">Last seen: 10 minutes ago</div>
+          </div>
+         </li>
+        </ul>
+       </div>
+       <!-- Chat Window -->
+       <div class="md:flex-1 flex flex-col border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800">
+        <div class="p-3 border-b border-gray-300 dark:border-gray-700 flex items-center space-x-3" id="chatHeader">
+         <img alt="Avatar of chat user" class="w-10 h-10 rounded-full object-cover" height="40" id="chatAvatar" src="https://storage.googleapis.com/a1aa/image/d3cf35bd-fc6b-4c25-d041-522b5d138281.jpg" width="40"/>
+         <div>
+          <div class="font-semibold" id="chatName">Alice</div>
+          <div class="text-xs text-gray-600 dark:text-gray-400" id="chatStatus">Online - Last seen: now</div>
+         </div>
+        </div>
+        <div class="flex-1 p-3 overflow-auto space-y-3" id="chatMessages">
+         <div class="flex justify-start">
+          <div class="bg-indigo-100 dark:bg-indigo-700 text-indigo-900 dark:text-indigo-100 rounded-lg px-3 py-2 max-w-xs break-words">Hey! How are you?</div>
+         </div>
+         <div class="flex justify-end">
+          <div class="bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-lg px-3 py-2 max-w-xs break-words">I'm good, thanks! Just working on the project.</div>
+         </div>
+         <div class="flex justify-start">
+          <img alt="Photo sent by Alice showing a scenic mountain landscape with a clear blue sky" class="rounded-lg max-w-xs" height="100" src="https://storage.googleapis.com/a1aa/image/399e01d8-a7c6-4460-add0-9ba4b8fdf56b.jpg" width="150"/>
+         </div>
+         <div class="flex justify-end">
+          <div class="bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-lg px-3 py-2 max-w-xs break-words">Looks amazing! Can you send the file?</div>
+         </div>
+         <div class="flex justify-start">
+          <a class="inline-block bg-indigo-100 dark:bg-indigo-700 text-indigo-900 dark:text-indigo-100 rounded px-3 py-1 max-w-xs truncate" download="project-doc.pdf" href="#" title="Download project-doc.pdf"><i class="fas fa-file-pdf mr-2"></i>project-doc.pdf</a>
+         </div>
+         <div class="flex justify-end">
+          <div class="bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-lg px-3 py-2 max-w-xs break-words">👍😊</div>
+         </div>
+        </div>
+        <form class="p-3 border-t border-gray-300 dark:border-gray-700 flex items-center space-x-2" id="chatForm">
+         <button aria-label="Insert Emoji" class="text-2xl hover:text-indigo-600 dark:hover:text-indigo-400 focus:outline-none" id="emojiBtn" type="button">😊</button>
+         <input autocomplete="off" class="flex-1 rounded border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-2 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500" id="chatInput" placeholder="Type a message..." type="text"/>
+         <button aria-label="Attach File or Image" class="text-xl hover:text-indigo-600 dark:hover:text-indigo-400 focus:outline-none" id="attachBtn" type="button"><i class="fas fa-paperclip"></i></button>
+         <button aria-label="Send Message" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500" type="submit">Send</button>
+         <input accept="image/*,application/pdf,.doc,.docx,.txt" class="hidden" id="fileInput" type="file"/>
+        </form>
+       </div>
+      </div>
+     </section>
+     <!-- Create Post View -->
+     <section class="hidden h-full flex flex-col p-4 space-y-4" id="createPostView">
+      <h2 class="text-lg font-semibold">Create Post</h2>
+      <form class="flex flex-col space-y-4" id="postForm">
+       <label class="block text-sm font-medium" for="postImage">Upload or Take a Photo</label>
+       <input accept="image/*" capture="environment" class="block w-full text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded cursor-pointer focus:outline-none focus:ring-2 focus:ring-indigo-500" id="postImage" type="file"/>
+       <label class="block text-sm font-medium" for="postText">Add a description or tags</label>
+       <textarea class="w-full rounded border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none" id="postText" placeholder="Write something..." rows="3"></textarea>
+       <div class="flex justify-end space-x-2">
+        <button class="px-4 py-2 rounded border border-gray-400 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500" type="reset">Clear</button>
+        <button class="px-4 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500" type="submit">Post</button>
+       </div>
+      </form>
+      <div class="flex-1 overflow-auto mt-4 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 p-4">
+       <h3 class="font-semibold mb-2">Timeline Posts</h3>
+       <ul class="space-y-4 overflow-auto max-h-[300px]" id="timelinePosts">
+        <li class="border border-gray-300 dark:border-gray-700 rounded-lg p-3 bg-indigo-50 dark:bg-indigo-900">
+         <img alt="Photo of a mountain sunset with orange and purple sky, pine trees silhouette in foreground" class="rounded mb-2 w-full object-cover" height="200" src="https://storage.googleapis.com/a1aa/image/d47503cc-0842-4f80-9421-6438238b39c5.jpg" width="300"/>
+         <p class="text-sm">Enjoying the beautiful mountain sunset #nature</p>
+         <div class="text-xs text-gray-600 dark:text-gray-400 mt-1">June 10, 2024</div>
+        </li>
+        <li class="border border-gray-300 dark:border-gray-700 rounded-lg p-3 bg-green-50 dark:bg-green-900">
+         <img alt="Photo of a cup of coffee on a wooden table with morning sunlight" class="rounded mb-2 w-full object-cover" height="200" src="https://storage.googleapis.com/a1aa/image/e70d3e90-fcb3-4630-8fb5-b1fe83a8821c.jpg" width="300"/>
+         <p class="text-sm">Morning coffee break #relax</p>
+         <div class="text-xs text-gray-600 dark:text-gray-400 mt-1">June 9, 2024</div>
+        </li>
+        <li class="border border-gray-300 dark:border-gray-700 rounded-lg p-3 bg-yellow-50 dark:bg-yellow-900">
+         <img alt="Photo of city night lights with skyscrapers and busy streets" class="rounded mb-2 w-full object-cover" height="200" src="https://storage.googleapis.com/a1aa/image/b7450a5a-e054-46b9-9d0f-478afa126567.jpg" width="300"/>
+         <p class="text-sm">City night vibes #urban</p>
+         <div class="text-xs text-gray-600 dark:text-gray-400 mt-1">June 8, 2024</div>
+        </li>
+       </ul>
+      </div>
+     </section>
+     <!-- Groups View -->
+     <section class="hidden h-full flex flex-col p-4 space-y-4" id="groupsView">
+      <div class="flex justify-between items-center">
+       <h2 class="text-lg font-semibold">Groups</h2>
+       <button class="flex items-center space-x-2 px-3 py-1 rounded-md bg-indigo-600 text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500" id="newGroupBtn">
+        <i class="fas fa-plus"></i>
+        <span>New Group</span>
+       </button>
+      </div>
+      <div class="flex flex-col md:flex-row md:space-x-4 h-full">
+       <div class="md:w-1/3 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 flex flex-col">
+        <div class="p-2 border-b border-gray-300 dark:border-gray-700 font-semibold">Groups</div>
+        <ul class="flex-1 overflow-auto divide-y divide-gray-200 dark:divide-gray-700" id="groupsList">
+         <li class="flex items-center p-2 cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-900" data-group-id="1">
+          <img alt="Group icon for Developers Group, blue circle with white code brackets" class="w-10 h-10 rounded-full object-cover" height="40" src="https://storage.googleapis.com/a1aa/image/423fff6e-ecf3-44f4-8a2c-5a670bdd250c.jpg" width="40"/>
+          <div class="ml-3 flex-1">
+           <div class="font-semibold">Developers Group</div>
+           <div class="text-xs text-gray-600 dark:text-gray-400">5 members</div>
+          </div>
+         </li>
+         <li class="flex items-center p-2 cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-900" data-group-id="2">
+          <img alt="Group icon for Friends, green circle with white smiley face" class="w-10 h-10 rounded-full object-cover" height="40" src="https://storage.googleapis.com/a1aa/image/ae1bedd5-81e7-4375-1553-b4087c8f4192.jpg" width="40"/>
+          <div class="ml-3 flex-1">
+           <div class="font-semibold">Friends</div>
+           <div class="text-xs text-gray-600 dark:text-gray-400">8 members</div>
+          </div>
+         </li>
+         <li class="flex items-center p-2 cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-900" data-group-id="3">
+          <img alt="Group icon for Family, red circle with white house icon" class="w-10 h-10 rounded-full object-cover" height="40" src="https://storage.googleapis.com/a1aa/image/10436e49-40f4-459a-7812-5f2e0fa497aa.jpg" width="40"/>
+          <div class="ml-3 flex-1">
+           <div class="font-semibold">Family</div>
+           <div class="text-xs text-gray-600 dark:text-gray-400">6 members</div>
+          </div>
+         </li>
+         <li class="flex items-center p-2 cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-900" data-group-id="4">
+          <img alt="Group icon for Project Managers, purple circle with white briefcase icon" class="w-10 h-10 rounded-full object-cover" height="40" src="https://storage.googleapis.com/a1aa/image/2e39d6c5-c6ec-47a1-d419-f250877be4ad.jpg" width="40"/>
+          <div class="ml-3 flex-1">
+           <div class="font-semibold">Project Managers</div>
+           <div class="text-xs text-gray-600 dark:text-gray-400">4 members</div>
+          </div>
+         </li>
+         <li class="flex items-center p-2 cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-900" data-group-id="5">
+          <img alt="Group icon for Gaming Discord, black circle with white game controller icon" class="w-10 h-10 rounded-full object-cover" height="40" src="https://storage.googleapis.com/a1aa/image/96050ea2-89a5-4cf6-cf35-ffffb560fe80.jpg" width="40"/>
+          <div class="ml-3 flex-1">
+           <div class="font-semibold">Gaming Discord</div>
+           <div class="text-xs text-gray-600 dark:text-gray-400">12 members</div>
+          </div>
+         </li>
+        </ul>
+       </div>
+       <div class="md:flex-1 flex flex-col border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800">
+        <div class="p-3 border-b border-gray-300 dark:border-gray-700 flex items-center space-x-3" id="groupChatHeader">
+         <img alt="Group avatar" class="w-10 h-10 rounded-full object-cover" height="40" id="groupChatAvatar" src="https://storage.googleapis.com/a1aa/image/5f1f8e8d-0902-4a63-c9d7-d1962f4fb6bc.jpg" width="40"/>
+         <div>
+          <div class="font-semibold" id="groupChatName">Developers Group</div>
+          <div class="text-xs text-gray-600 dark:text-gray-400" id="groupChatStatus">5 members - Active</div>
+         </div>
+        </div>
+        <div class="flex-1 p-3 overflow-auto space-y-3" id="groupChatMessages">
+         <div class="flex justify-start space-x-2">
+          <img alt="Avatar of Alice in group chat" class="w-8 h-8 rounded-full object-cover" height="30" src="https://storage.googleapis.com/a1aa/image/f0a0839a-4856-44af-1893-ff5cd80d81d1.jpg" width="30"/>
+          <div class="bg-indigo-100 dark:bg-indigo-700 text-indigo-900 dark:text-indigo-100 rounded-lg px-3 py-2 max-w-xs break-words">Hey team, the deadline is approaching!</div>
+         </div>
+         <div class="flex justify-start space-x-2">
+          <img alt="Avatar of Bob in group chat" class="w-8 h-8 rounded-full object-cover" height="30" src="https://storage.googleapis.com/a1aa/image/223dc8a1-a0ee-4a2e-4a8c-94414c0b30b4.jpg" width="30"/>
+          <div class="bg-indigo-100 dark:bg-indigo
