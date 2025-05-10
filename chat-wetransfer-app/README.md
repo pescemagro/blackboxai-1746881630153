@@ -1,16 +1,16 @@
-# Chat WeTransfer App - Real World Ready Version
+# Chat WeTransfer App - Worldwide Peer-to-Peer Encrypted Chat
 
-This is a local web application for end-to-end encrypted chat conversations with code sharing similar to WeTransfer. It is optimized to work locally on Android devices and other platforms.
+This is a local web application for end-to-end encrypted peer-to-peer chat conversations with code sharing similar to WeTransfer. It is optimized to work worldwide, including on Android devices.
 
 ## Features
 
 - End-to-end encryption using ECDSA keys and AES-GCM encryption
 - Message signing and verification for authenticity
 - Blockchain-like message history with proof of work for integrity
-- Real-time chat using WebSocket (socket.io)
-- Generate and share unique chat room codes
+- Real-time peer-to-peer chat using WebRTC with signaling server
+- Generate and share unique chat room codes for connection
 - Responsive UI with Tailwind CSS, Google Fonts, and Font Awesome
-- Works locally on Android browsers and other devices
+- Works worldwide over the internet with NAT traversal using STUN servers
 
 ## Setup and Run
 
@@ -22,7 +22,7 @@ This is a local web application for end-to-end encrypted chat conversations with
 npm install
 ```
 
-3. Start the server:
+3. Start the signaling server:
 
 ```bash
 npm start
@@ -34,7 +34,9 @@ npm start
 http://localhost:3000
 ```
 
-5. On Android devices connected to the same local network, open the local IP address of the server on port 3000.
+5. Share the generated code with your chat partner anywhere in the world.
+
+6. Both users open the app, enter the same code, and establish a secure peer-to-peer connection.
 
 ## Usage
 
@@ -46,10 +48,11 @@ http://localhost:3000
 
 ## Notes
 
-- This app is designed for local network usage.
-- Make sure devices are connected to the same Wi-Fi network for chat to work.
+- The app uses WebRTC for peer-to-peer communication with signaling via the server.
+- STUN servers are used for NAT traversal; TURN servers can be added if needed.
 - The app uses Web Crypto API, so use modern browsers that support it.
 - Proof of work mining may cause slight delays when sending messages.
+- For Android packaging, wrap the frontend in a WebView and use Gradle to build the APK.
 
 ## License
 
