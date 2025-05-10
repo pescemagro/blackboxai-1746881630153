@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Chat WeTransfer App</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" />
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+    }
+  </style>
+</head>
+<body class="bg-gray-100 flex flex-col h-screen">
+  <div class="max-w-md mx-auto bg-white shadow-md rounded-lg flex flex-col flex-grow">
+    <header class="p-4 border-b border-gray-300 flex justify-between items-center">
+      <h1 class="text-xl font-semibold text-gray-800">Chat WeTransfer</h1>
+      <button id="generateCodeBtn" class="bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700 transition">
+        Generate Code
+      </button>
+    </header>
+    <main class="flex flex-col flex-grow p-4 overflow-auto" id="chatContainer">
+      <div id="messages" class="flex flex-col space-y-2"></div>
+    </main>
+    <footer class="p-4 border-t border-gray-300 flex items-center space-x-2">
+      <input
+        id="messageInput"
+        type="text"
+        placeholder="Type your message..."
+        class="flex-grow border border-gray-300 rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        disabled
+      />
+      <button
+        id="sendBtn"
+        class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition disabled:opacity-50"
+        disabled
+      >
+        Send
+      </button>
+    </footer>
+    <div id="codeDisplay" class="p-4 border-t border-gray-300 text-center text-gray-700 break-words"></div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    // Utility functions for cryptography
+    async function generateECDSAKeyPair() {
+      return await window.crypto.subtle.generateKey(
+        {
+          name: "ECDSA",
+          namedCurve: "P-256",
+        },
+        true,
+        ["sign", "verify"]
+      );
+    }
+
+    async function exportPublicKey(key) {
+      const spki = await window.crypto.subtle.exportKey("spki", key);
+      return arrayBufferToHex(spki);
+    }
+
+    async function signMessage(privateKey, message) {
+      const encoder = new TextEncoder();
+      const data = encoder.encode(message);
+      const signature = await window.crypto.subtle.sign(
+        {
+          name: "ECDSA",
+          hash: { name: "SHA-256" },
+        },
+        privateKey,
+        data
+      );
+      return arrayBufferToHex(signature);
+    }
+
+    async function verifySignature(publicKey, signatureHex, message) {
+      const signature = hexToArrayBuffer(signatureHex);
+      const encoder = new TextEncoder();
+      const data = encoder.encode(message);
+      return await window.crypto.subtle.verify(
+        {
+          name: "ECDSA",
+          hash: { name: "SHA-256" },
+        },
+        publicKey,
+        signature,
+        data
+      );
+    }
+
+    function arrayBufferToHex(buffer) {
+      return [...new Uint8Array(buffer)]
+        .map(b => b.toString(16).padStart(2, "0"))
+        .join("");
+    }
+
+    function hexToArrayBuffer(hex) {
+      const bytes = new Uint8Array(hex.length / 2);
+      for (let i = 0; i < bytes.length; i++) {
+        bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+      }
+      return bytes.buffer;
+    }
+
+    async function importPublicKey(spkiHex) {
+      const spki = hexToArrayBuffer(spkiHex);
+      return await window.crypto.subtle.importKey(
+        "spki",
+        spki,
+        {
+          name: "ECDSA",
+          namedCurve: "P-256",
+        },
+        true,
+        ["verify"]
+      );
+    }
+
+    async function deriveAESKey(networkCode) {
+      const encoder = new TextEncoder();
+      const keyMaterial = await window.crypto.subtle.importKey(
+        "raw",
+        encoder.encode(networkCode),
+        "PBKDF2",
+        false,
+        ["deriveKey"]
+      );
+      return await window.crypto.subtle.deriveKey(
+        {
+          name: "PBKDF2",
+          salt: encoder.encode("chat-wetransfer-salt"),
+          iterations: 100000,
+          hash: "SHA-256",
+        },
+        keyMaterial,
+        { name: "AES-GCM", length: 256 },
+        false,
+        ["encrypt", "decrypt"]
+      );
+    }
+
+    async function encryptMessage(aesKey, message) {
+      const encoder = new TextEncoder();
+      const iv = window.crypto.getRandomValues(new Uint8Array(12));
+      const encoded = encoder.encode(message);
+      const ciphertext = await window.crypto.subtle.encrypt(
+        {
+          name: "AES-GCM",
+          iv: iv,
+        },
+        aesKey,
+        encoded
+      );
+      const combined = new Uint8Array(iv.byteLength + ciphertext.byteLength);
+      combined.set(iv, 0);
+      combined.set(new Uint8Array(ciphertext), iv.byteLength);
+      return arrayBufferToHex(combined.buffer);
+    }
+
+    async function decryptMessage(aesKey, dataHex) {
+      const data = hexToArrayBuffer(dataHex);
+      const iv = data.slice(0, 12);
+      const ciphertext = data.slice(12);
+      const decrypted = await window.crypto.subtle.decrypt(
+        {
+          name: "AES-GCM",
+          iv: iv,
+        },
+        aesKey,
+        ciphertext
+      );
+      const decoder = new TextDecoder();
+      return decoder.decode(decrypted);
+    }
+
+    // Blockchain-like message history with proof of work
+    class MessageBlock {
+      constructor(index, previousHash, messages, nonce = 0) {
+        this.index = index;
+        this.previousHash = previousHash;
+        this.messages = messages;
+        this.nonce = nonce;
+        this.timestamp = Date.now();
+        this.hash = "";
+      }
+
+      async calculateHash() {
+        const data = JSON.stringify({
+          index: this.index,
+          previousHash: this.previousHash,
+          messages: this.messages,
+          nonce: this.nonce,
+          timestamp: this.timestamp,
+        });
+        const encoder = new TextEncoder();
+        const dataBuffer = encoder.encode(data);
+        const hashBuffer = await crypto.subtle.digest("SHA-256", dataBuffer);
+        this.hash = arrayBufferToHex(hashBuffer);
+        return this.hash;
+      }
+
+      async mine(difficulty) {
+        const target = "0".repeat(difficulty);
+        while (true) {
+          await this.calculateHash();
+          if (this.hash.startsWith(target)) {
+            break;
+          }
+          this.nonce++;
+        }
+      }
+    }
+
+    class Blockchain {
+      constructor(difficulty = 2) {
+        this.chain = [];
+        this.difficulty = difficulty;
+        this.createGenesisBlock();
+      }
+
+      async createGenesisBlock() {
+        const genesisBlock = new MessageBlock(0, "0", []);
+        await genesisBlock.mine(this.difficulty);
+        this.chain.push(genesisBlock);
+      }
+
+      getLatestBlock() {
+        return this.chain[this.chain.length - 1];
+      }
+
+      async addBlock(messages) {
+        const previousHash = this.getLatestBlock().hash;
+        const newBlock = new MessageBlock(this.chain.length, previousHash, messages);
+        await newBlock.mine(this.difficulty);
+        this.chain.push(newBlock);
+      }
+
+      isChainValid() {
+        for (let i = 1; i < this.chain.length; i++) {
+          const currentBlock = this.chain[i];
+          const previousBlock = this.chain[i - 1];
+          if (currentBlock.hash !== currentBlock.calculateHash()) {
+            return false;
+          }
+          if (currentBlock.previousHash !== previousBlock.hash) {
+            return false;
+          }
+        }
+        return true;
+      }
+    }
+
+    const socket = io();
+
+    let currentCode = null;
+    let aesKey = null;
+    let ecdsaKeyPair = null;
+    let publicKeyHex = null;
+    let blockchain = new Blockchain();
+
+    const generateCodeBtn = document.getElementById('generateCodeBtn');
+    const sendBtn = document.getElementById('sendBtn');
+    const messageInput = document.getElementById('messageInput');
+    const messages = document.getElementById('messages');
+    const codeDisplay = document.getElementById('codeDisplay');
+
+    function addMessage(text, isOwn = false) {
+      const msgDiv = document.createElement('div');
+      msgDiv.className = isOwn
+        ? 'self-end bg-blue-600 text-white px-3 py-2 rounded-lg max-w-xs break-words'
+        : 'self-start bg-gray-300 text-gray-800 px-3 py-2 rounded-lg max-w-xs break-words';
+      msgDiv.textContent = text;
+      messages.appendChild(msgDiv);
+      messages.scrollTop = messages.scrollHeight;
+    }
+
+    async function initializeKeysAndJoinRoom(code) {
+      aesKey = await deriveAESKey(code);
+      ecdsaKeyPair = await generateECDSAKeyPair();
+      publicKeyHex = await exportPublicKey(ecdsaKeyPair.publicKey);
+      socket.emit('joinRoom', code);
+      codeDisplay.textContent = 'Share this code to chat: ' + code;
+      messageInput.disabled = false;
+      sendBtn.disabled = false;
+      generateCodeBtn.disabled = true;
+      addMessage('System: You joined the chat room ' + code);
+    }
+
+    generateCodeBtn.addEventListener('click', async () => {
+      const res = await fetch('/generate-code');
+      const data = await res.json();
+      currentCode = data.code;
+      await initializeKeysAndJoinRoom(currentCode);
+    });
+
+    sendBtn.addEventListener('click', async () => {
+      const msg = messageInput.value.trim();
+      if (!msg) return;
+      const encryptedMessage = await encryptMessage(aesKey, msg);
+      const signature = await signMessage(ecdsaKeyPair.privateKey, encryptedMessage);
+      const messagePayload = {
+        encryptedMessage,
+        signature,
+        publicKey: publicKeyHex,
+        timestamp: Date.now(),
+      };
+      socket.emit('chatMessage', { code: currentCode, encryptedMessage: messagePayload });
+      addMessage(msg, true);
+      messageInput.value = '';
+      messageInput.focus();
+      // Add message to blockchain
+      await blockchain.addBlock([messagePayload]);
+    });
+
+    messageInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        sendBtn.click();
+      }
+    });
+
+    socket.on('chatMessage', async ({ encryptedMessage, sender }) => {
+      if (sender !== socket.id) {
+        try {
+          // Verify signature
+          const publicKey = await importPublicKey(encryptedMessage.publicKey);
+          const valid = await verifySignature(publicKey, encryptedMessage.signature, encryptedMessage.encryptedMessage);
+          if (!valid) {
+            addMessage('Warning: Invalid signature detected.');
+            return;
+          }
+          // Decrypt message
+          const decrypted = await decryptMessage(aesKey, encryptedMessage.encryptedMessage);
+          addMessage(decrypted);
+          // Add message to blockchain
+          await blockchain.addBlock([encryptedMessage]);
+        } catch (e) {
+          addMessage('Error decrypting or verifying message.');
+        }
+      }
+    });
+  </script>
+</body>
+</html>
