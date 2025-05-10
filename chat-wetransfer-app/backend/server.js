@@ -19,23 +19,36 @@ app.get('/generate-code', (req, res) => {
   res.json({ code });
 });
 
+const rooms = {};
+
 io.on('connection', (socket) => {
   console.log('a user connected:', socket.id);
 
-  // Join room by code
   socket.on('joinRoom', (code) => {
     socket.join(code);
+    if (!rooms[code]) {
+      rooms[code] = [];
+    }
+    rooms[code].push(socket.id);
     console.log(`User ${socket.id} joined room ${code}`);
+    // Notify existing users in room about new user
+    socket.to(code).emit('newPeer', { peerId: socket.id });
   });
 
-  // Handle chat message
-  // Relay encrypted messages only, no decryption or inspection
-  socket.on('chatMessage', ({ code, encryptedMessage }) => {
-    io.to(code).emit('chatMessage', { encryptedMessage, sender: socket.id });
+  // Signaling messages for WebRTC
+  socket.on('signal', ({ code, to, data }) => {
+    io.to(to).emit('signal', { from: socket.id, data });
   });
 
   socket.on('disconnect', () => {
     console.log('user disconnected:', socket.id);
+    // Remove user from rooms
+    for (const code in rooms) {
+      rooms[code] = rooms[code].filter(id => id !== socket.id);
+      if (rooms[code].length === 0) {
+        delete rooms[code];
+      }
+    }
   });
 });
 
